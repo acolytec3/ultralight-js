@@ -6,6 +6,8 @@ See [API](./docs/modules.html) for more details
 
 See [Architecture](./diagrams/ARCHITECTURE.md) for architectural concepts
 
+See [Examples](./EXAMPLES.md) on how to quickly interact with Portal Network using Repl.
+
 ## Routing Table Management
 
 The Portal Network module currently supports two overlay routing tables for use with the below two subnetworks:
