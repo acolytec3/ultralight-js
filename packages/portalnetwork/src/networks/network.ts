@@ -155,7 +155,7 @@ export abstract class BaseNetwork extends EventEmitter {
     return this.portal.sendPortalNetworkResponse(src, requestId, payload)
   }
   findEnr(nodeId: string): ENR | undefined {
-    return this.portal.discv5.findEnr(nodeId) ?? this.routingTable.getWithPending(nodeId)?.value
+    return this.portal.findENR(nodeId) ?? this.routingTable.getWithPending(nodeId)?.value
   }
 
   public async put(contentKey: Uint8Array, content: string) {
@@ -296,8 +296,9 @@ export abstract class BaseNetwork extends EventEmitter {
       this.logger(`Invalid ENR provided. PING aborted`)
       return
     }
-    if (!this.routingTable.getWithPending(enr.nodeId)?.value && extensionType !== 0) {
-      throw new Error(`First PING message must be type 0: CLIENT_INFO_RADIUS_AND_CAPABILITIES.`)
+    const peerCapabilities = this.portal.enrCache.getPeerCapabilities(enr.nodeId)
+    if (peerCapabilities.has(extensionType) === false) {
+      throw new Error(`Peer is not know to support extension type: ${extensionType}`)
     }
     const timeout = setTimeout(() => {
       return undefined
@@ -328,16 +329,27 @@ export abstract class BaseNetwork extends EventEmitter {
               `Client ${shortId(enr.nodeId)} is ${decodeClientInfo(ClientInfo).clientName} node with capabilities: ${Capabilities}`,
             )
             this.routingTable.updateRadius(enr.nodeId, DataRadius)
+            this.portal.enrCache.updateNodeFromPong(enr, this.networkId, {
+              capabilities: Capabilities,
+              clientInfo: decodeClientInfo(ClientInfo),
+              radius: DataRadius,
+            })
             break
           }
           case PingPongPayloadExtensions.BASIC_RADIUS_PAYLOAD: {
             const { dataRadius } = BasicRadius.deserialize(pongMessage.customPayload)
             this.routingTable.updateRadius(enr.nodeId, dataRadius)
+            this.portal.enrCache.updateNodeFromPong(enr, this.networkId, {
+              radius: dataRadius,
+            })
             break
           }
           case PingPongPayloadExtensions.HISTORY_RADIUS_PAYLOAD: {
             const { dataRadius } = HistoryRadius.deserialize(pongMessage.customPayload)
             this.routingTable.updateRadius(enr.nodeId, dataRadius)
+            this.portal.enrCache.updateNodeFromPong(enr, this.networkId, {
+              radius: dataRadius,
+            })
             break
           }
           case PingPongPayloadExtensions.ERROR_RESPONSE: {
@@ -377,20 +389,31 @@ export abstract class BaseNetwork extends EventEmitter {
     if (this.capabilities.includes(pingMessage.payloadType)) {
       switch (pingMessage.payloadType) {
         case PingPongPayloadExtensions.CLIENT_INFO_RADIUS_AND_CAPABILITIES: {
-          const { DataRadius } = ClientInfoAndCapabilities.deserialize(pingMessage.customPayload)
+          const { DataRadius, Capabilities, ClientInfo } = ClientInfoAndCapabilities.deserialize(pingMessage.customPayload)
           this.routingTable.updateRadius(src.nodeId, DataRadius)
+          this.portal.enrCache.updateNodeFromPing(src, this.networkId, {
+            capabilities: Capabilities,
+            clientInfo: decodeClientInfo(ClientInfo),
+            radius: DataRadius,
+          })
           pongPayload = this.pingPongPayload(pingMessage.payloadType)
           break
         }
         case PingPongPayloadExtensions.BASIC_RADIUS_PAYLOAD: {
           const { dataRadius } = BasicRadius.deserialize(pingMessage.customPayload)
           this.routingTable.updateRadius(src.nodeId, dataRadius)
+          this.portal.enrCache.updateNodeFromPing(src, this.networkId, {
+            radius: dataRadius,
+          })
           pongPayload = this.pingPongPayload(pingMessage.payloadType)
           break
         }
         case PingPongPayloadExtensions.HISTORY_RADIUS_PAYLOAD: {
           const { dataRadius } = HistoryRadius.deserialize(pingMessage.customPayload)
           this.routingTable.updateRadius(src.nodeId, dataRadius)
+          this.portal.enrCache.updateNodeFromPing(src, this.networkId, {
+            radius: dataRadius,
+          })
           pongPayload = this.pingPongPayload(pingMessage.payloadType)
           break
         }

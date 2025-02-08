@@ -193,6 +193,7 @@ export class ContentLookup {
         this.logger(`received ${res.enrs.length} ENRs for closer nodes`)
         for (const enr of res.enrs) {
           const decodedEnr = ENR.decode(enr as Uint8Array)
+          this.network.portal.updateENRCache([decodedEnr])
           // // Skip if the node has an active uTP request
           if (this.network.portal.uTP.hasRequests(decodedEnr.nodeId) === true) {
             continue

@@ -36,6 +36,7 @@ import type {
 import { MessageCodes, PortalWireMessageType } from '../wire/types.js'
 import { type IClientInfo } from '../wire/payloadExtensions.js'
 import { RateLimiter } from '../transports/rateLimiter.js'
+import { ENRCache } from './enrCache.js'
 
 export class PortalNetwork extends EventEmitter<PortalNetworkEvents> {
   clientInfo: IClientInfo
@@ -49,7 +50,7 @@ export class PortalNetwork extends EventEmitter<PortalNetworkEvents> {
   metrics: PortalNetworkMetrics | undefined
   logger: Debugger
   ETH: ETH
-
+  enrCache: ENRCache
   shouldRefresh: boolean = true
 
   public static create = async (opts: Partial<PortalNetworkOpts>) => {
@@ -198,6 +199,7 @@ export class PortalNetwork extends EventEmitter<PortalNetworkEvents> {
     this.discv5 = Discv5.create(opts.config as IDiscv5CreateOptions)
     // cache signature to ensure ENR can be encoded on startup
     this.discv5.enr.encode()
+    this.enrCache = new ENRCache({})
     this.logger = debug(this.discv5.enr.nodeId.slice(0, 5)).extend('Portal')
     this.networks = new Map()
     this.bootnodes = opts.bootnodes ?? []
@@ -265,11 +267,18 @@ export class PortalNetwork extends EventEmitter<PortalNetworkEvents> {
     // TODO: Decide whether to put everything on a centralized event bus
     this.discv5.on('talkReqReceived', this.onTalkReq)
     this.discv5.on('talkRespReceived', this.onTalkResp)
+    this.discv5.on('enrAdded', (enr: ENR) => {
+      this.updateENRCache([enr])
+    })
+    this.discv5.on('discovered', (enr: ENR) => {
+      this.updateENRCache([enr])
+    })
     // if (this.discv5.sessionService.transport instanceof HybridTransportService) {
     //   ;(this.discv5.sessionService as any).send = this.send.bind(this)
     // }
     this.discv5.sessionService.on('established', async (nodeAddr, enr) => {
       this.discv5.findEnr(enr.nodeId) === undefined && this.discv5.addEnr(enr)
+      this.updateENRCache([enr])
     })
     if (opts.metrics) {
       this.metrics = opts.metrics
@@ -290,6 +299,7 @@ export class PortalNetwork extends EventEmitter<PortalNetworkEvents> {
     await this.discv5.start()
     await this.db.open()
     const storedIndex = await this.db.getBlockIndex()
+    await this.loadENRCache()
     for (const network of this.networks.values()) {
       try {
         // Check for stored radius in db
@@ -326,6 +336,7 @@ export class PortalNetwork extends EventEmitter<PortalNetworkEvents> {
     await this.discv5.stop()
     this.discv5.removeAllListeners()
     this.removeAllListeners()
+    await this.storeENRCache()
     await this.db.close()
     for (const network of this.networks.values()) {
       network.stopRefresh()
@@ -405,6 +416,9 @@ export class PortalNetwork extends EventEmitter<PortalNetworkEvents> {
     src: ENR | null,
     message: ITalkReqMessage,
   ) => {
+    if (src) {
+      this.updateENRCache([src])
+    }
     this.metrics?.totalBytesReceived.inc(message.request.length)
     if (bytesToHex(message.protocol) === NetworkId.UTPNetwork) {
       await this.handleUTP(nodeAddress, message, message.request)
@@ -421,8 +435,11 @@ export class PortalNetwork extends EventEmitter<PortalNetworkEvents> {
     await network.handle(message, nodeAddress)
   }
 
-  private onTalkResp = (_: any, __: any, message: ITalkRespMessage) => {
+  private onTalkResp = (_: INodeAddress, src: ENR | null, message: ITalkRespMessage) => {
     this.metrics?.totalBytesReceived.inc(message.response.length)
+    if (src) {
+      this.updateENRCache([src])
+    }
   }
 
   /**
@@ -464,11 +481,14 @@ export class PortalNetwork extends EventEmitter<PortalNetworkEvents> {
     networkId: NetworkId,
     utpMessage?: boolean,
   ): Promise<Uint8Array> => {
+    if (enr instanceof ENR) {
+      this.updateENRCache([enr])
+    }
     const messageNetwork = utpMessage !== undefined ? NetworkId.UTPNetwork : networkId
     const remote =
       enr instanceof ENR
         ? enr
-        : (this.discv5.findEnr(enr.nodeId) ?? fromNodeAddress(enr.socketAddr.nodeAddress(), 'udp'))
+        : (this.findENR(enr.nodeId) ?? fromNodeAddress(enr.socketAddr.nodeAddress(), 'udp'))
     try {
       this.metrics?.totalBytesSent.inc(payload.length)
       const res = await this.discv5.sendTalkReq(remote, payload, hexToBytes(messageNetwork))
@@ -520,5 +540,38 @@ export class PortalNetwork extends EventEmitter<PortalNetworkEvents> {
     (<RateLimiter>(<any>this.discv5.sessionService.transport)['rateLimiter']).removeFromBlackList(
       ma.nodeAddress().address,
     )
+  }
+
+  public updateENRCache = (enrs: ENR[]) => {
+    for (const enr of enrs) {
+      this.enrCache.updateENR(enr)
+    }
+  }
+
+  public findENR = (nodeId: string): ENR | undefined => {
+    return this.enrCache.getENR(nodeId) ?? this.discv5.findEnr(nodeId)
+  }
+
+  public storeENRCache = async () => {
+    const cache = Array.from(this.enrCache['peers'].values())
+      .filter((peer) => peer.enr !== undefined)
+      .map((peer) => {
+        return peer.enr!.encodeTxt()
+      })
+    await this.db.put('enr_cache', JSON.stringify(cache))
+  }
+
+  public loadENRCache = async () => {
+    try {
+      const storedEnrCache = await this.db.get('enr_cache')
+      if (storedEnrCache) {
+        const enrs = JSON.parse(storedEnrCache)
+        for (const enr of enrs) {
+          this.enrCache.updateENR(ENR.decodeTxt(enr))
+        }
+      }
+    } catch {
+      // No action
+    }
   }
 }

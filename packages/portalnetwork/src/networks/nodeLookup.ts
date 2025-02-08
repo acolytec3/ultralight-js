@@ -82,6 +82,7 @@ export class NodeLookup {
 
         for (const enr of response.enrs) {
           const decodedEnr = ENR.decode(enr)
+          this.network.portal.updateENRCache([decodedEnr])
           this.foundNodes.push(decodedEnr)
           const nodeId = decodedEnr.nodeId
           try {
