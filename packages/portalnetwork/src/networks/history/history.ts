@@ -2,9 +2,11 @@ import { Block, BlockHeader } from '@ethereumjs/block'
 import { bytesToHex, bytesToInt, equalsBytes, hexToBytes } from '@ethereumjs/util'
 import debug from 'debug'
 
+import type { BaseNetworkConfig, ContentLookupResponse, FindContentMessage } from '../../index.js'
 import {
   ContentMessageType,
   FoundContent,
+  HistoricalSummariesBlockProof,
   MessageCodes,
   PingPongPayloadExtensions,
   PortalWireMessageType,
@@ -19,19 +21,26 @@ import { BaseNetwork } from '../network.js'
 import { NetworkId } from '../types.js'
 
 import {
+  AccumulatorProofType,
   BlockHeaderWithProof,
   BlockNumberKey,
+  HistoricalRootsBlockProof,
   HistoryNetworkContentType,
   MERGE_BLOCK,
   SHANGHAI_BLOCK,
   sszReceiptsListType,
 } from './types.js'
-import { getContentKey, verifyPostCapellaHeaderProof, verifyPreCapellaHeaderProof, verifyPreMergeHeaderProof } from './util.js'
+import {
+  getContentKey,
+  verifyPostCapellaHeaderProof,
+  verifyPreCapellaHeaderProof,
+  verifyPreMergeHeaderProof,
+} from './util.js'
 
 import type { ENR } from '@chainsafe/enr'
-import type { Debugger } from 'debug'
-import type { BaseNetworkConfig, ContentLookupResponse, FindContentMessage } from '../../index.js'
+
 import { RunStatusCode } from '@lodestar/light-client'
+import type { Debugger } from 'debug'
 
 export class HistoryNetwork extends BaseNetwork {
   networkId: NetworkId.HistoryNetwork
@@ -95,7 +104,7 @@ export class HistoryNetwork extends BaseNetwork {
   /**
    * Retrieve a blockheader from the DB by hash
    * @param blockHash the hash of the blockheader sought
-   * @param asBytes return the header as RLP encoded bytes or as an @ethereumjs/block BlockHeader
+   * @param asBytes return the header as RLP encoded bytes or as an `@ethereumjs/block` BlockHeader
    * @returns the bytes or Blockheader if found or else undefined
    */
   public getBlockHeaderFromDB = async (
@@ -109,6 +118,7 @@ export class HistoryNetwork extends BaseNetwork {
     const value = await this.findContentLocally(contentKey)
     if (value === undefined) return undefined
     const header = BlockHeaderWithProof.deserialize(value).header
+
     return asBytes === true
       ? header
       : BlockHeader.fromRLPSerializedHeader(header, { setHardfork: true })
@@ -162,57 +172,85 @@ export class HistoryNetwork extends BaseNetwork {
     const proof = headerProof.proof
 
     if (header.number < MERGE_BLOCK) {
-      if (proof.value === null) {
+      if (proof === null) {
         throw new Error('Received pre-merge block header without proof')
       }
-      if (Array.isArray(proof.value)) {
-        let validated = false
-        if ('blockHash' in validation) {
-          validated = verifyPreMergeHeaderProof(proof.value, validation.blockHash, header.number)
-        } else {
-          validated = verifyPreMergeHeaderProof(
-            proof.value,
-            bytesToHex(header.hash()),
-            validation.blockNumber,
-          )
-        }
-        if (!validated) {
-          throw new Error('Unable to validate proof for pre-merge header')
-        }
+      let deserializedProof: Uint8Array[]
+      try {
+        deserializedProof = AccumulatorProofType.deserialize(proof)
+      } catch (err: any) {
+        this.logger(`invalid proof for block ${bytesToHex(header.hash())}`)
+        throw new Error(`invalid proof for block ${bytesToHex(header.hash())}`)
+      }
+      let validated = false
+      if ('blockHash' in validation) {
+        validated = verifyPreMergeHeaderProof(
+          deserializedProof,
+          validation.blockHash,
+          header.number,
+        )
+      } else {
+        validated = verifyPreMergeHeaderProof(
+          deserializedProof,
+          bytesToHex(header.hash()),
+          validation.blockNumber,
+        )
+      }
+      if (!validated) {
+        throw new Error('Unable to validate proof for pre-merge header')
       }
     } else if (header.number < SHANGHAI_BLOCK) {
-      if (proof.value === null) {
+      if (proof === null) {
         this.logger('Received post-merge block without proof')
         throw new Error('Received post-merge block header without proof')
       }
+      let deserializedProof: ReturnType<typeof HistoricalRootsBlockProof.deserialize>
+      try {
+        deserializedProof = HistoricalRootsBlockProof.deserialize(proof)
+      } catch (err: any) {
+        this.logger(`invalid proof for block ${bytesToHex(header.hash())}`)
+        throw new Error(`invalid proof for block ${bytesToHex(header.hash())}`)
+      }
       let validated = false
       try {
-        validated = verifyPreCapellaHeaderProof(proof.value as any, header.hash())
+        validated = verifyPreCapellaHeaderProof(deserializedProof, header.hash())
       } catch (err: any) {
         this.logger(`Unable to validate proof for post-merge header: ${err.message}`)
       }
       if (!validated) {
         throw new Error('Unable to validate proof for post-merge header')
       }
-    }
-    else {
+    } else {
       // TODO: Check proof slot to ensure header is from previous sync period and handle ephemeral headers separately
-      if (proof.value === null) {
+      if (proof === null) {
         this.logger('Received post-merge block without proof')
+      }
+      let deserializedProof: ReturnType<typeof HistoricalSummariesBlockProof.deserialize>
+      try {
+        deserializedProof = HistoricalSummariesBlockProof.deserialize(proof)
+      } catch (err: any) {
+        this.logger(`invalid proof for block ${bytesToHex(header.hash())}`)
+        throw new Error(`invalid proof for block ${bytesToHex(header.hash())}`)
       }
       const beacon = this.portal.network()['0x500c']
       if (beacon !== undefined && beacon.lightClient?.status === RunStatusCode.started) {
         try {
-          verifyPostCapellaHeaderProof(proof.value as any, header.hash(), beacon.historicalSummaries, beacon.beaconConfig)
+          verifyPostCapellaHeaderProof(
+            deserializedProof,
+            header.hash(),
+            beacon.historicalSummaries,
+            beacon.beaconConfig,
+          )
           this.logger(`Successfully verified proof for block header ${header.number}`)
         } catch {
           this.logger('Received post-capella block header with invalid proof')
           // TODO: throw new Error('Received post-merge block header with invalid proof')
         }
       } else {
-        this.logger('Received post-capella block but Beacon light client is not running so cannot verify proof')
+        this.logger(
+          'Received post-capella block but Beacon light client is not running so cannot verify proof',
+        )
       }
-
     }
     await this.indexBlockHash(header.number, bytesToHex(header.hash()))
     return header.hash()

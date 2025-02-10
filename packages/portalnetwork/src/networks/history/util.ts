@@ -8,6 +8,7 @@ import { ssz } from '@lodestar/types'
 import { historicalEpochs } from './data/epochHashes.js'
 import { historicalRoots } from './data/historicalRoots.js'
 import {
+  AccumulatorProofType,
   BlockBodyContentType,
   BlockHeaderWithProof,
   BlockNumberKey,
@@ -95,17 +96,17 @@ export const decodeHistoryNetworkContentKey = (
   contentKey: Uint8Array,
 ):
   | {
-    contentType:
-    | HistoryNetworkContentType.BlockHeader
-    | HistoryNetworkContentType.BlockBody
-    | HistoryNetworkContentType.Receipt
-    | HistoryNetworkContentType.HeaderProof
-    keyOpt: Uint8Array
-  }
+      contentType:
+        | HistoryNetworkContentType.BlockHeader
+        | HistoryNetworkContentType.BlockBody
+        | HistoryNetworkContentType.Receipt
+        | HistoryNetworkContentType.HeaderProof
+      keyOpt: Uint8Array
+    }
   | {
-    contentType: HistoryNetworkContentType.BlockHeaderByNumber
-    keyOpt: bigint
-  } => {
+      contentType: HistoryNetworkContentType.BlockHeaderByNumber
+      keyOpt: bigint
+    } => {
   const contentType: HistoryNetworkContentType = contentKey[0]
   if (contentType === HistoryNetworkContentType.BlockHeaderByNumber) {
     const blockNumber = BlockNumberKey.deserialize(contentKey.slice(1)).blockNumber
@@ -220,11 +221,11 @@ export const addRLPSerializedBlock = async (
   })
   const header = block.header
   const headerKey = getContentKey(HistoryNetworkContentType.BlockHeader, hexToBytes(blockHash))
+  const proof = AccumulatorProofType.serialize(witnesses)
   if (header.number < MERGE_BLOCK) {
-    const proof: Witnesses = witnesses
     const headerProof = BlockHeaderWithProof.serialize({
       header: header.serialize(),
-      proof: { selector: 1, value: proof },
+      proof,
     })
     try {
       await network.validateHeader(headerProof, { blockHash })
@@ -235,7 +236,7 @@ export const addRLPSerializedBlock = async (
   } else {
     const headerProof = BlockHeaderWithProof.serialize({
       header: header.serialize(),
-      proof: { selector: 0, value: null },
+      proof,
     })
     await network.indexBlockHash(header.number, bytesToHex(header.hash()))
 

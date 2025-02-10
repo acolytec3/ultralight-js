@@ -6,6 +6,7 @@ import { bytesToHex, hexToBytes, randomBytes } from '@ethereumjs/util'
 import { assert, describe, it } from 'vitest'
 
 import {
+  AccumulatorProofType,
   BlockHeaderWithProof,
   HistoricalRootsBlockProof,
   HistoryNetworkContentType,
@@ -37,7 +38,6 @@ describe('store -- Headers and Epoch Accumulators', async () => {
       )
     const node = await PortalNetwork.create({
       bindAddress: '127.0.0.1',
-      transport: TransportLayer.WEB,
       supportedNetworks: [{ networkId: NetworkId.HistoryNetwork }],
     })
     const network = node.networks.get(NetworkId.HistoryNetwork) as HistoryNetwork
@@ -50,10 +50,7 @@ describe('store -- Headers and Epoch Accumulators', async () => {
       headerKey,
       BlockHeaderWithProof.serialize({
         header: hexToBytes(block1Rlp),
-        proof: {
-          selector: 1,
-          value: proof,
-        },
+        proof: AccumulatorProofType.serialize(proof),
       }),
     )
     const contentKey = getContentKey(HistoryNetworkContentType.BlockHeader, hexToBytes(block1Hash))
@@ -84,14 +81,14 @@ describe('store -- Block Bodies and Receipts', async () => {
       { encoding: 'hex' },
     )
 
-  const proof = await generatePreMergeHeaderProof(207686n, hexToBytes(epoch))
+  const proof = AccumulatorProofType.serialize(
+    await generatePreMergeHeaderProof(207686n, hexToBytes(epoch)),
+  )
   const headerWithProof = BlockHeaderWithProof.serialize({
     header: block.header.serialize(),
-    proof: {
-      selector: 1,
-      value: proof,
-    },
+    proof,
   })
+
   const headerKey = getContentKey(
     HistoryNetworkContentType.BlockHeader,
     hexToBytes(serializedBlock.blockHash),
@@ -143,7 +140,7 @@ describe('Header Tests', async () => {
     const headerProof = HistoricalRootsBlockProof.fromJson(headerProofJson)
     const serializedHeaderWithProof = BlockHeaderWithProof.serialize({
       header: header.serialize(),
-      proof: { selector: 2, value: headerProof },
+      proof: HistoricalRootsBlockProof.serialize(headerProof),
     })
     try {
       const res = network.validateHeader(serializedHeaderWithProof, {
@@ -165,13 +162,12 @@ describe('Header Tests', async () => {
       )
 
     const block1000 = require('../../testData/testBlock1000.json')
-    const proof = await generatePreMergeHeaderProof(1000n, hexToBytes(_epochRaw))
+    const proof = AccumulatorProofType.serialize(
+      await generatePreMergeHeaderProof(1000n, hexToBytes(_epochRaw)),
+    )
     const preMergeHeaderWithProof = BlockHeaderWithProof.serialize({
       header: hexToBytes(block1000.rawHeader),
-      proof: {
-        selector: 1,
-        value: proof,
-      },
+      proof,
     })
     const headerKey = getContentKey(
       HistoryNetworkContentType.BlockHeader,
@@ -185,10 +181,12 @@ describe('Header Tests', async () => {
     const header = blockHeaderFromRpc(headerJson, { setHardfork: true })
     const fakeHeaderKey = getContentKey(HistoryNetworkContentType.BlockHeader, randomBytes(32))
     const headerProofJson = require('./testData/mergeBlockHeaderProof.json')
-    const headerProof = HistoricalRootsBlockProof.fromJson(headerProofJson)
+    const headerProof = HistoricalRootsBlockProof.serialize(
+      HistoricalRootsBlockProof.fromJson(headerProofJson),
+    )
     const serializedHeaderWithProof = BlockHeaderWithProof.serialize({
       header: header.serialize(),
-      proof: { selector: 2, value: headerProof },
+      proof: headerProof,
     })
     try {
       await network.store(fakeHeaderKey, serializedHeaderWithProof)
@@ -200,16 +198,15 @@ describe('Header Tests', async () => {
       )
     }
     const headerKey = getContentKey(HistoryNetworkContentType.BlockHeader, header.hash())
-    headerProof.slot = 1n
     const fakeProof = BlockHeaderWithProof.serialize({
       header: header.serialize(),
-      proof: { selector: 2, value: headerProof },
+      proof: headerProof.reverse(),
     })
     try {
       await network.store(headerKey, fakeProof)
       assert.fail('should have thrown')
     } catch (err: any) {
-      assert.equal(err.message, 'Unable to validate proof for post-merge header')
+      assert.ok(err.message.includes('invalid proof'))
     }
   })
 })

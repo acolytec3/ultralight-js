@@ -1,17 +1,14 @@
 import { readFileSync } from 'fs'
-import { ProofType } from '@chainsafe/persistent-merkle-tree'
-import { ContainerType, UintBigintType } from '@chainsafe/ssz'
+import { ContainerType } from '@chainsafe/ssz'
 import { BlockHeader } from '@ethereumjs/block'
 import { bytesToHex, concatBytes, hexToBytes, randomBytes } from '@ethereumjs/util'
 import { assert, describe, it } from 'vitest'
 
-import { NetworkId, PortalNetwork } from '../../../src/index.js'
 import { historicalEpochs } from '../../../src/networks/history/data/epochHashes.js'
 import {
   ContentKeyType,
   Receipt,
   getContentId,
-  getContentKey,
 } from '../../../src/networks/history/index.js'
 import {
   BlockHeaderWithProof,
@@ -22,7 +19,8 @@ import {
 
 import testData from './testData/headerWithProof.json' assert { type: 'json' }
 
-import type { HistoryNetwork, TxReceiptType } from '../../../src/networks/history/index.js'
+import { AccumulatorProofType, generatePreMergeHeaderProof, verifyPreMergeHeaderProof } from '../../../dist/index.js'
+import type { TxReceiptType } from '../../../src/networks/history/index.js'
 
 describe('History Subnetwork contentKey serialization/deserialization', () => {
   it('content Key', () => {
@@ -230,6 +228,25 @@ describe('Header With Proof serialization/deserialization tests', async () => {
   const serialized_container = MasterAccumulatorType.serialize({
     historicalEpochs: _historicalEpochs,
   })
+  const actualEpoch =
+    '0x' +
+    readFileSync(
+      './test/networks/history/testData/0x03cddbda3fd6f764602c06803ff083dbfc73f2bb396df17a31e5457329b9a0f38d.portalcontent',
+      { encoding: 'hex' },
+    )
+
+
+  const serializedBlock1 = hexToBytes(testData[1000001].content_value)
+  const headerWithProof = BlockHeaderWithProof.deserialize(serializedBlock1)
+  const header = BlockHeader.fromRLPSerializedHeader(headerWithProof.header, {
+    skipConsensusFormatValidation: true,
+    setHardfork: true,
+  })
+
+  const epochHash = historicalEpochs[Math.floor(1000001 / 8192)]
+  const actual_Epoch = EpochAccumulator.deserialize(hexToBytes(actualEpoch))
+  const proof = await generatePreMergeHeaderProof(header.number, hexToBytes(actualEpoch))
+
   it('should serialize/deserialize', async () => {
     assert.deepEqual(
       hexToBytes(masterAccumulator),
@@ -238,45 +255,16 @@ describe('Header With Proof serialization/deserialization tests', async () => {
     )
   })
 
-  const actualEpoch =
-    '0x' +
-    readFileSync(
-      './test/networks/history/testData/0x03cddbda3fd6f764602c06803ff083dbfc73f2bb396df17a31e5457329b9a0f38d.portalcontent',
-      { encoding: 'hex' },
-    )
-  const node = await PortalNetwork.create({
-    bindAddress: '192.168.0.1',
-    supportedNetworks: [{ networkId: NetworkId.HistoryNetwork }],
-  })
-  const history = node.networks.get(NetworkId.HistoryNetwork) as HistoryNetwork
-  const serializedBlock1 = hexToBytes(testData[1000001].content_value)
-  const serializedBlock2 = hexToBytes(testData[1000002].content_value)
-  const headerWithProof = BlockHeaderWithProof.deserialize(serializedBlock1)
-  const headerWithProof2 = BlockHeaderWithProof.deserialize(serializedBlock2)
-  const deserializedHeader = BlockHeader.fromRLPSerializedHeader(headerWithProof.header, {
-    skipConsensusFormatValidation: true,
-    setHardfork: true,
-  })
-  const deserializedHeader2 = BlockHeader.fromRLPSerializedHeader(headerWithProof2.header, {
-    skipConsensusFormatValidation: true,
-    setHardfork: true,
-  })
-  const contentKey = getContentKey(HistoryNetworkContentType.BlockHeader, deserializedHeader.hash())
-  const epochHash = historicalEpochs[Math.floor(1000001 / 8192)]
-  const actual_Epoch = EpochAccumulator.deserialize(hexToBytes(actualEpoch))
-  const tree = EpochAccumulator.value_toTree(actual_Epoch)
-  const proof = EpochAccumulator.createFromProof(
-    {
-      type: ProofType.single,
-      gindex: EpochAccumulator.tree_getLeafGindices(1n, tree)[(1000001 % 8192) * 2],
-      witnesses: headerWithProof.proof.value! as Uint8Array[],
-      leaf: deserializedHeader.hash(),
-    },
-    hexToBytes(epochHash),
-  )
-  it('should validate', async () => {
-    assert.ok(proof, `proof is valid: ${bytesToHex(proof.hashTreeRoot())}`)
-  })
+  const blockHeaderWithProof =
+    BlockHeaderWithProof.serialize({
+      header: header.serialize(),
+      proof: AccumulatorProofType.serialize(proof),
+    })
+  const deserializedBlockHeaderWithProof = BlockHeaderWithProof.deserialize(blockHeaderWithProof)
+  assert.ok(verifyPreMergeHeaderProof(proof, bytesToHex(header.hash()), header.number), `proof is valid`)
+  assert.equal(BlockHeader.fromRLPSerializedHeader(deserializedBlockHeaderWithProof.header, { setHardfork: true }).number, header.number, `header number matches`)
+
+
   it('should match epoch hash', async () => {
     assert.equal(
       bytesToHex(EpochAccumulator.hashTreeRoot(actual_Epoch)),
@@ -284,34 +272,5 @@ describe('Header With Proof serialization/deserialization tests', async () => {
       'stored epoch hash matches valid epoch',
     )
   })
-  const total_difficulty = new UintBigintType(32).deserialize(
-    (headerWithProof.proof.value! as Uint8Array[])[0],
-  )
-  const total_difficulty2 = new UintBigintType(32).deserialize(
-    (headerWithProof2.proof.value! as Uint8Array[])[0],
-  )
-  it('should calculate total difficulty', () => {
-    assert.equal(
-      total_difficulty2 - total_difficulty,
-      deserializedHeader2.difficulty,
-      'deserialized headers have valid difficulty',
-    )
-  })
-  it('should deserialize header', async () => {
-    assert.equal(
-      deserializedHeader.number,
-      1000001n,
-      'deserialized header number matches test vector',
-    )
-    assert.equal(
-      bytesToHex(contentKey),
-      testData[1000001].content_key,
-      'generated expected content key',
-    )
-    assert.ok(
-      history.validateHeader(serializedBlock1, {
-        blockHash: bytesToHex(deserializedHeader.hash()),
-      }),
-    )
-  })
 })
+

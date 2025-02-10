@@ -3,9 +3,7 @@ import {
   ByteVectorType,
   ContainerType,
   ListCompositeType,
-  NoneType,
   UintBigintType,
-  UnionType,
   VectorCompositeType,
 } from '@chainsafe/ssz'
 import { MAX_WITHDRAWALS_PER_PAYLOAD } from '@lodestar/params'
@@ -25,7 +23,7 @@ export const MAX_TRANSACTION_COUNT = 16384 // 2 ** 14
 export const MAX_RECEIPT_LENGTH = 134217728 // 2 ** 27
 export const MAX_HEADER_LENGTH = 8192 // 2 ** 13
 export const MAX_ENCODED_UNCLES_LENGTH = 131072 // MAX_HEADER_LENGTH * 2 ** 4
-
+export const MAX_HEADER_PROOF_LENGTH = 1024
 export const MERGE_BLOCK = 15537393n
 export const SHANGHAI_BLOCK = 17034871n
 
@@ -207,14 +205,7 @@ export const HistoricalSummariesBlockProof = new ContainerType({
   slot: SlotType,
 })
 
-export const BlockHeaderProofType = new UnionType([
-  new NoneType(),
-  AccumulatorProofType,
-  HistoricalRootsBlockProof,
-  HistoricalSummariesBlockProof,
-])
-
 export const BlockHeaderWithProof = new ContainerType({
   header: new ByteListType(MAX_HEADER_LENGTH),
-  proof: BlockHeaderProofType,
+  proof: new ByteListType(MAX_HEADER_PROOF_LENGTH),
 })
